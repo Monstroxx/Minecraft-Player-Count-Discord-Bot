@@ -1,32 +1,112 @@
 require('dotenv').config() // Load .env file
 const axios = require('axios')
-const Discord = require('discord.js')
-const client = new Discord.Client()
+const { Client, GatewayIntentBits, ActivityType } = require('discord.js')
 
-function pingForPlayers() {
+const client = new Client({ 
+	intents: [GatewayIntentBits.Guilds] 
+})
 
-	// Ping API for server data.
-	axios.get(`https://api.mcsrvstat.us/1/${process.env.MC_SERVER_IP}`).then(res => {
+async function pingForPlayers() {
+	try {
+		// Ping API for server data with more detailed info
+		const res = await axios.get(`https://api.mcsrvstat.us/2/${process.env.MC_SERVER_IP}`)
+		
 		// If we got a valid response
 		if(res.data && res.data.players) {
-			let playerCount = res.data.players.online || 0 // Default to zero
-			client.user.setPresence({
-				game: {
-					// Example: "Watching 5 players on server.com"
-					name: `${playerCount} player${playerCount > 1 ? 's' : ''} on ${process.env.MC_SERVER_IP}`,
-					type: 3 // Use activity type 3 which is "Watching"
+			let playerCount = res.data.players.online || 0
+			let maxPlayers = res.data.players.max || 0
+			let serverVersion = res.data.version || 'Unknown'
+			let playerList = res.data.players.list || []
+			
+			// Create activity text with more info
+			let activityText = `${playerCount}/${maxPlayers} players`
+			
+			// Add first few player names if available
+			if (playerList.length > 0) {
+				let displayNames = playerList.slice(0, 3).join(', ')
+				if (playerList.length > 3) {
+					displayNames += ` +${playerList.length - 3} more`
 				}
+				activityText = `${playerCount}/${maxPlayers}: ${displayNames}`
+			}
+			
+			client.user.setActivity(activityText, {
+				type: ActivityType.Watching
 			})
-			console.log('Updated player count to', playerCount)
+			
+			// Update voice channel name if configured
+			if (process.env.VOICE_CHANNEL_ID) {
+				try {
+					console.log(`Looking for voice channel ID: ${process.env.VOICE_CHANNEL_ID}`)
+					const voiceChannel = client.channels.cache.get(process.env.VOICE_CHANNEL_ID)
+					if (voiceChannel) {
+						const channelName = `🎮 Players: ${playerCount}/${maxPlayers}`
+						console.log(`Current channel name: "${voiceChannel.name}", New name: "${channelName}"`)
+						if (voiceChannel.name !== channelName) {
+							await voiceChannel.setName(channelName)
+							console.log(`✅ Updated voice channel name: ${channelName}`)
+						} else {
+							console.log(`⏭️ Channel name already correct`)
+						}
+					} else {
+						console.log(`❌ Voice channel not found with ID: ${process.env.VOICE_CHANNEL_ID}`)
+					}
+				} catch (voiceErr) {
+					console.log('❌ Error updating voice channel:', voiceErr.message)
+				}
+			} else {
+				console.log('⚠️ VOICE_CHANNEL_ID not set in .env')
+			}
+			
+			console.log(`Updated: ${playerCount}/${maxPlayers} players${playerList.length > 0 ? ` (${playerList.join(', ')})` : ''}`)
+		} else {
+			client.user.setActivity('Server offline', {
+				type: ActivityType.Watching
+			})
+			
+			// Update voice channel for offline server
+			if (process.env.VOICE_CHANNEL_ID) {
+				try {
+					const voiceChannel = client.channels.cache.get(process.env.VOICE_CHANNEL_ID)
+					if (voiceChannel) {
+						const channelName = '🔴 Server Offline'
+						if (voiceChannel.name !== channelName) {
+							await voiceChannel.setName(channelName)
+						}
+					}
+				} catch (voiceErr) {
+					console.log('Error updating voice channel:', voiceErr.message)
+				}
+			}
+			
+			console.log('Server appears to be offline or unreachable')
 		}
-		else
-			console.log('Could not load player count data for', process.env.MC_SERVER)
-
-	}).catch(err => console.log('Error pinging api.mcsrvstat.us for data:', err))
+	} catch (err) {
+		client.user.setActivity('Connection error', {
+			type: ActivityType.Watching
+		})
+		
+		// Update voice channel for connection error
+		if (process.env.VOICE_CHANNEL_ID) {
+			try {
+				const voiceChannel = client.channels.cache.get(process.env.VOICE_CHANNEL_ID)
+				if (voiceChannel) {
+					const channelName = '❌ Connection Error'
+					if (voiceChannel.name !== channelName) {
+						await voiceChannel.setName(channelName)
+					}
+				}
+			} catch (voiceErr) {
+				console.log('Error updating voice channel:', voiceErr.message)
+			}
+		}
+		
+		console.log('Error pinging api.mcsrvstat.us for data:', err.message)
+	}
 }
 
 // Runs when client connects to Discord.
-client.on('ready', () => {
+client.once('ready', () => {
 	console.log('Logged in as', client.user.tag)
 
 	pingForPlayers() // Ping server once on startup
