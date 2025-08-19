@@ -114,5 +114,48 @@ client.once('ready', () => {
 	setInterval(pingForPlayers, Math.max(1, process.env.MC_PING_FREQUENCY || 1) * 60 * 1000)
 })
 
+// Graceful shutdown handler
+async function gracefulShutdown(signal) {
+	console.log(`\n🛑 Received ${signal}, shutting down gracefully...`)
+	
+	// Update voice channel to show bot is offline
+	if (process.env.VOICE_CHANNEL_ID && client.isReady()) {
+		try {
+			const voiceChannel = client.channels.cache.get(process.env.VOICE_CHANNEL_ID)
+			if (voiceChannel) {
+				await voiceChannel.setName('🔴 Bot Offline')
+				console.log('✅ Updated voice channel to show bot offline')
+			}
+		} catch (err) {
+			console.log('❌ Error updating voice channel on shutdown:', err.message)
+		}
+	}
+	
+	// Gracefully close Discord connection
+	if (client.isReady()) {
+		await client.destroy()
+		console.log('✅ Discord connection closed')
+	}
+	
+	console.log('👋 Bot shutdown complete')
+	process.exit(0)
+}
+
+// Handle different shutdown signals
+process.on('SIGINT', () => gracefulShutdown('SIGINT'))   // Ctrl+C
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM')) // Process manager termination
+process.on('beforeExit', () => gracefulShutdown('beforeExit'))
+
+// Handle uncaught exceptions
+process.on('uncaughtException', async (err) => {
+	console.error('💥 Uncaught Exception:', err)
+	await gracefulShutdown('uncaughtException')
+})
+
+process.on('unhandledRejection', async (reason, promise) => {
+	console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason)
+	await gracefulShutdown('unhandledRejection')
+})
+
 // Login to Discord
 client.login(process.env.DISCORD_TOKEN)
