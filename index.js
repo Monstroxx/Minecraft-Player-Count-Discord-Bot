@@ -6,10 +6,37 @@ const client = new Client({
 	intents: [GatewayIntentBits.Guilds] 
 })
 
+// Track last channel update to avoid rate limits
+let lastChannelUpdate = 0
+
 async function pingForPlayers() {
 	try {
-		// Ping API for server data with more detailed info
-		const res = await axios.get(`https://api.mcsrvstat.us/2/${process.env.MC_SERVER_IP}`)
+		// Try mcapi.us first (less caching), fallback to mcsrvstat.us
+		let res;
+		try {
+			res = await axios.get(`https://mcapi.us/server/status?ip=${process.env.MC_SERVER_IP}`, { timeout: 5000 })
+			console.log('📡 MCAPI Response:', JSON.stringify(res.data, null, 2))
+			
+			// Transform mcapi.us response to match mcsrvstat format
+			if (res.data.online) {
+				const originalData = res.data
+				res.data = {
+					online: true,
+					players: {
+						online: originalData.players ? originalData.players.now : 0,
+						max: originalData.players ? originalData.players.max : 0,
+						list: originalData.players && originalData.players.sample ? originalData.players.sample.map(p => p.name) : []
+					},
+					version: originalData.server ? originalData.server.name : 'Unknown'
+				}
+			} else {
+				res.data = { online: false }
+			}
+		} catch (mcapiErr) {
+			console.log('⚠️ MCAPI failed, trying mcsrvstat.us...')
+			res = await axios.get(`https://api.mcsrvstat.us/2/${process.env.MC_SERVER_IP}?t=${Date.now()}`)
+			console.log('📡 MCSrvStat Response:', JSON.stringify(res.data, null, 2))
+		}
 		
 		// If we got a valid response
 		if(res.data && res.data.players) {
@@ -34,19 +61,26 @@ async function pingForPlayers() {
 				type: ActivityType.Watching
 			})
 			
-			// Update voice channel name if configured
+			// Update voice channel name if configured (with rate limit protection)
 			if (process.env.VOICE_CHANNEL_ID) {
 				try {
-					console.log(`Looking for voice channel ID: ${process.env.VOICE_CHANNEL_ID}`)
 					const voiceChannel = client.channels.cache.get(process.env.VOICE_CHANNEL_ID)
 					if (voiceChannel) {
 						const channelName = `🎮 Players: ${playerCount}/${maxPlayers}`
-						console.log(`Current channel name: "${voiceChannel.name}", New name: "${channelName}"`)
+						const now = Date.now()
+						
 						if (voiceChannel.name !== channelName) {
-							await voiceChannel.setName(channelName)
-							console.log(`✅ Updated voice channel name: ${channelName}`)
+							const cooldownMs = Math.max(10, process.env.MC_PING_FREQUENCY || 10) * 60 * 1000 // Min 10 minutes
+							if (now - lastChannelUpdate >= cooldownMs) {
+								await voiceChannel.setName(channelName)
+								lastChannelUpdate = now
+								console.log(`✅ Updated voice channel: ${channelName}`)
+							} else {
+								const timeLeft = Math.ceil((cooldownMs - (now - lastChannelUpdate)) / 60000)
+								console.log(`🕒 Rate limited, next update in ${timeLeft} minutes`)
+							}
 						} else {
-							console.log(`⏭️ Channel name already correct`)
+							console.log(`⏭️ Channel name already correct: ${channelName}`)
 						}
 					} else {
 						console.log(`❌ Voice channel not found with ID: ${process.env.VOICE_CHANNEL_ID}`)
@@ -54,8 +88,6 @@ async function pingForPlayers() {
 				} catch (voiceErr) {
 					console.log('❌ Error updating voice channel:', voiceErr.message)
 				}
-			} else {
-				console.log('⚠️ VOICE_CHANNEL_ID not set in .env')
 			}
 			
 			console.log(`Updated: ${playerCount}/${maxPlayers} players${playerList.length > 0 ? ` (${playerList.join(', ')})` : ''}`)
@@ -142,9 +174,14 @@ async function gracefulShutdown(signal) {
 }
 
 // Handle different shutdown signals
-process.on('SIGINT', () => gracefulShutdown('SIGINT'))   // Ctrl+C
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM')) // Process manager termination
-process.on('beforeExit', () => gracefulShutdown('beforeExit'))
+process.on('SIGINT', async () => {
+	console.log('\n⚠️ Received SIGINT (Ctrl+C)')
+	await gracefulShutdown('SIGINT')
+})
+process.on('SIGTERM', async () => {
+	console.log('\n⚠️ Received SIGTERM')
+	await gracefulShutdown('SIGTERM')
+})
 
 // Handle uncaught exceptions
 process.on('uncaughtException', async (err) => {
